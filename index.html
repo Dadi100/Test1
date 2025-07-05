@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>GOOG Financial Overview with Time Range Slider & Right-side Labels</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.0/dist/nouislider.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/nouislider@15.7.0/dist/nouislider.min.css" rel="stylesheet" />
+  <style>
+    body {
+      background: #1e1e1e;
+      color: white;
+      font-family: sans-serif;
+      text-align: center;
+      margin: 0; padding: 0;
+    }
+    #chartContainer {
+      width: 90%;
+      max-width: 1000px;
+      height: 500px;
+      margin: 30px auto 10px;
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-sizing: border-box;
+      position: relative;
+    }
+    canvas {
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
+    }
+    #sliderContainer {
+      width: 90%;
+      max-width: 800px;
+      margin: 20px auto 40px;
+    }
+    #rangeSlider {
+      height: 12px;
+      margin: 20px 0;
+    }
+    #dateRange {
+      margin-top: 10px;
+      color: #ddd;
+      font-weight: bold;
+    }
+    .noUi-handle {
+      width: 18px;
+      height: 18px;
+      top: -4px;
+      cursor: grab;
+      border-radius: 50%;
+      background: #3498db;
+      border: 2px solid #2980b9;
+      box-shadow: 0 0 5px rgba(0,0,0,0.3);
+    }
+    .noUi-handle:active {
+      cursor: grabbing;
+      background: #2980b9;
+    }
+  </style>
+</head>
+<body>
+
+<h2>GOOG Financial Overview (2015–2025)</h2>
+
+<div id="chartContainer">
+  <canvas id="stockChart"></canvas>
+</div>
+
+<div id="sliderContainer">
+  <div id="rangeSlider"></div>
+  <div id="dateRange"></div>
+</div>
+
+<script>
+  const formatDate = d => d.toISOString().slice(0,10);
+
+  // Generate monthly timestamps from Jan 2015 to Jun 2025
+  const datePoints = [];
+  let date = new Date(2015, 0, 1);
+  const maxDate = new Date(2025, 5, 30);
+  while (date <= maxDate) {
+    datePoints.push(date.getTime());
+    date = new Date(date.getFullYear(), date.getMonth() + 1, 1);
+  }
+
+  // Sample datasets
+  const stockPriceData = [];
+  for(let y=2015; y<=2025; y++) {
+    stockPriceData.push({date: `${y}-01-01`, close: 150 + Math.sin(y) * 50 + Math.random() * 20});
+  }
+
+  const netIncomeData = [];
+  const revenueData = [];
+  const psRatioData = [];
+  let currentDate = new Date(2015, 0, 1);
+  while(currentDate <= maxDate) {
+    const dateStr = currentDate.toISOString().slice(0,10);
+    const yFrac = currentDate.getFullYear() + currentDate.getMonth()/12;
+    netIncomeData.push({date: dateStr, value: 200000 + Math.cos(yFrac)*100000 + Math.random()*50000});
+    revenueData.push({date: dateStr, value: 350000 + Math.sin(yFrac)*100000 + Math.random()*60000});
+    psRatioData.push({date: dateStr, value: 5.5 + Math.sin(yFrac*2)*1.5 + Math.random()*0.3});
+    currentDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 3, 1);
+  }
+
+  // Plugin to draw last visible value label on right side, centered on axis line
+  const lastValueLabelPlugin = {
+    id: 'lastValueLabel',
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea: { top, bottom }, scales } = chart;
+      const datasets = chart.data.datasets;
+
+      // Map yAxisID to pixel x position (center of axis line)
+      const yAxisXMap = {};
+      for (const axisId in scales) {
+        if (axisId.startsWith('y')) {
+          const scale = scales[axisId];
+          yAxisXMap[axisId] = (scale.left + scale.right) / 2;
+        }
+      }
+
+      datasets.forEach((dataset, i) => {
+        const meta = chart.getDatasetMeta(i);
+        if (!meta || meta.data.length === 0) return;
+
+        // Find last visible data point (x inside scale.x min/max)
+        let lastVisibleIndex = -1;
+        const xKey = dataset.parsing.xAxisKey || 'x';
+        const yKey = dataset.parsing.yAxisKey || 'y';
+
+        const xMin = scales.x.min?.getTime?.() ?? new Date(scales.x.min).getTime();
+        const xMax = scales.x.max?.getTime?.() ?? new Date(scales.x.max).getTime();
+
+        for (let j = dataset.data.length - 1; j >= 0; j--) {
+          const dt = new Date(dataset.data[j][xKey]).getTime();
+          if (dt >= xMin && dt <= xMax) {
+            lastVisibleIndex = j;
+            break;
+          }
+        }
+        if (lastVisibleIndex === -1) return;
+
+        const pointMeta = meta.data[lastVisibleIndex];
+        if (!pointMeta) return;
+
+        const px = yAxisXMap[dataset.yAxisID];
+        const py = pointMeta.y;
+
+        const value = dataset.data[lastVisibleIndex][yKey];
+        const color = dataset.borderColor || 'black';
+
+        // Format text nicely
+        const formatted = dataset.yAxisID === 'yPSRatio'
+          ? value.toFixed(2)
+          : (dataset.yAxisID === 'yStock' ? value.toFixed(2) : '$' + value.toLocaleString());
+
+        ctx.save();
+        ctx.font = '12px sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+
+        const padding = 6;
+        const textWidth = ctx.measureText(formatted).width + padding * 2;
+        const textHeight = 20;
+
+        // Clamp y position inside chart area
+        const yPos = Math.min(Math.max(py, top + textHeight / 2), bottom - textHeight / 2);
+
+        // Draw rounded rect background
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 1;
+        const radius = 5;
+        const x = px - textWidth / 2;
+        const y = yPos - textHeight / 2;
+
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + textWidth - radius, y);
+        ctx.quadraticCurveTo(x + textWidth, y, x + textWidth, y + radius);
+        ctx.lineTo(x + textWidth, y + textHeight - radius);
+        ctx.quadraticCurveTo(x + textWidth, y + textHeight, x + textWidth - radius, y + textHeight);
+        ctx.lineTo(x + radius, y + textHeight);
+        ctx.quadraticCurveTo(x, y + textHeight, x, y + textHeight - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
+
+        ctx.fill();
+        ctx.stroke();
+
+        // Text color black or white for contrast
+        ctx.fillStyle = (color === 'black' || color === '#000' || color === '#000000') ? 'white' : 'black';
+        ctx.fillText(formatted, px, yPos);
+        ctx.restore();
+      });
+    }
+  };
+
+  Chart.register(lastValueLabelPlugin);
+  const ctx = document.getElementById('stockChart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Stock Price',
+          data: stockPriceData,
+          borderColor: 'blue',
+          backgroundColor: 'rgba(0,0,255,0.1)',
+          parsing: { xAxisKey: 'date', yAxisKey: 'close' },
+          tension: 0.3,
+          pointRadius: 0,
+          yAxisID: 'yStock'
+        },
+		{
+		  label: 'Net Income',
+		  data: netIncomeData,
+		  borderColor: 'orange',
+		  backgroundColor: 'rgba(255,165,0,0.1)',
+		  parsing: { xAxisKey: 'date', yAxisKey: 'value' },
+		  tension: 0.3,
+		  pointStyle: 'rect',
+		  pointRadius: 5,
+		  pointBackgroundColor: 'orange',
+		  yAxisID: 'yFinance'
+		},
+		{
+		  label: 'Revenue',
+		  data: revenueData,
+		  borderColor: '#4b4b4b',
+		  backgroundColor: 'rgba(198,198,198,0.1)',
+		  parsing: { xAxisKey: 'date', yAxisKey: 'value' },
+		  tension: 0.3,
+		  pointStyle: 'triangle',
+		  pointRadius: 5,
+		  pointBackgroundColor: '#4b4b4b',
+		  yAxisID: 'yFinance'
+
+        },
+        {
+          label: 'PS Ratio',
+          data: psRatioData,
+          borderColor: 'green',
+          backgroundColor: 'rgba(0,128,0,0.1)',
+          parsing: { xAxisKey: 'date', yAxisKey: 'value' },
+          tension: 0.3,
+          pointRadius: 0,
+          yAxisID: 'yPSRatio'
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: [lastValueLabelPlugin],
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'month', tooltipFormat: 'MMM yyyy', displayFormats: { month: 'MMM yyyy' } },
+          title: { display: true, text: 'Date' },
+          min: new Date('2015-01-01'),
+          max: new Date('2025-06-30')
+        },
+        yStock: {
+          type: 'linear',
+          position: 'right',
+          min: 0,
+          max: 400,
+          title: { display: true, text: 'Stock Price ($)' },
+          grid: { drawOnChartArea: false },
+          offset: true
+        },
+        yPSRatio: {
+          type: 'linear',
+          position: 'right',
+          min: 3.6,
+          max: 9,
+          title: { display: true, text: 'PS Ratio' },
+          grid: { drawOnChartArea: false },
+          offset: true
+        },
+        yFinance: {
+          type: 'linear',
+          position: 'right',
+          min: -160000,
+          max: 500000,
+          title: { display: true, text: 'Net Income & Revenue ($)' },
+          grid: { drawOnChartArea: false },
+          offset: true
+        }
+      }
+    }
+  });
+
+  // Setup slider
+  const slider = document.getElementById('rangeSlider');
+  const display = document.getElementById('dateRange');
+
+  noUiSlider.create(slider, {
+    start: [0, datePoints.length - 1],
+    connect: true,
+    range: { min: 0, max: datePoints.length - 1 },
+    step: 1,
+    tooltips: [
+      {
+        to: idx => formatDate(new Date(datePoints[idx])),
+        from: str => datePoints.findIndex(d => formatDate(new Date(d)) === str)
+      },
+      {
+        to: idx => formatDate(new Date(datePoints[idx])),
+        from: str => datePoints.findIndex(d => formatDate(new Date(d)) === str)
+      }
+    ]
+  });
+
+  slider.noUiSlider.on('update', values => {
+    const startIdx = Math.round(values[0]);
+    const endIdx = Math.round(values[1]);
+
+    const startDate = new Date(datePoints[startIdx]);
+    const endDate = new Date(datePoints[endIdx]);
+
+    chart.options.scales.x.min = startDate;
+    chart.options.scales.x.max = endDate;
+    chart.update('none');
+
+    display.textContent = `${formatDate(startDate)} → ${formatDate(endDate)}`;
+  });
+</script>
+
+</body>
+</html>
